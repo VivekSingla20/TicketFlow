@@ -1,0 +1,130 @@
+
+
+services:
+  # ─── PostgreSQL ──────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: ticket-postgres
+    environment:
+      POSTGRES_USER: ticketuser
+      POSTGRES_PASSWORD: ticketpass
+      POSTGRES_DB: ticketdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ticketuser -d ticketdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ─── Redis ──────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: ticket-redis
+    command: >
+      redis-server
+      --maxmemory-policy noeviction
+      --appendonly yes
+      --appendfsync everysec
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ─── API Server ─────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ticket-api
+    command: >
+      sh -c "npx prisma migrate deploy --schema=./src/db/prisma/schema.prisma && node src/server.js"
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_URL: ${DATABASE_URL:-postgresql://ticketuser:ticketpass@postgres:5432/ticketdb}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      JWT_SECRET: dev-jwt-secret-key-not-for-production
+      JWT_ACCESS_EXPIRY: 15m
+      JWT_REFRESH_EXPIRY: 7d
+      REFRESH_COOKIE_SECRET: dev-cookie-secret-not-for-production
+      RESERVATION_TTL_MINUTES: 10
+      MOCK_PAYMENT_WEBHOOK_SECRET: dev-webhook-secret
+      MOCK_PAYMENT_SUCCESS_RATE: 0.95
+      MOCK_PAYMENT_DELAY_MS_MIN: 200
+      MOCK_PAYMENT_DELAY_MS_MAX: 1200
+      RATE_LIMIT_GLOBAL_MAX: 500
+      RATE_LIMIT_GLOBAL_WINDOW_MS: 60000
+      LOG_LEVEL: debug
+      LOG_FORMAT: json
+      WS_CORS_ORIGINS: "http://localhost:8080,http://localhost:5173,http://localhost:3001,http://localhost:3000"
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── BullMQ Worker ──────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ticket-worker
+    command: node src/worker.js
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      WORKER_CONCURRENCY: 10
+      DATABASE_URL: ${DATABASE_URL:-postgresql://ticketuser:ticketpass@postgres:5432/ticketdb}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      JWT_SECRET: dev-jwt-secret-key-not-for-production
+      JWT_ACCESS_EXPIRY: 15m
+      JWT_REFRESH_EXPIRY: 7d
+      REFRESH_COOKIE_SECRET: dev-cookie-secret-not-for-production
+      RESERVATION_TTL_MINUTES: 10
+      MOCK_PAYMENT_WEBHOOK_SECRET: dev-webhook-secret
+      MOCK_PAYMENT_SUCCESS_RATE: 0.95
+      MOCK_PAYMENT_DELAY_MS_MIN: 200
+      MOCK_PAYMENT_DELAY_MS_MAX: 1200
+      RATE_LIMIT_GLOBAL_MAX: 500
+      RATE_LIMIT_GLOBAL_WINDOW_MS: 60000
+      LOG_LEVEL: debug
+      LOG_FORMAT: json
+      WS_CORS_ORIGINS: "http://localhost:8080,http://localhost:5173,http://localhost:3001,http://localhost:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── BullMQ Board (Job Dashboard) ──────────────────────────
+  bull-board:
+    image: deadly0/bull-board
+    container_name: ticket-bull-board
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      BULL_PREFIX: bull
+    ports:
+      - "3001:3000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,295 @@
+// Prisma Schema for High-Concurrency Ticket Booking System
+generator client {
+  provider     = "prisma-client-js"
+  output       = "../../generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+
+// ─── Enums ─────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum EventStatus {
+  DRAFT
+  PUBLISHED
+  CANCELLED
+  COMPLETED
+}
+
+enum SeatSection {
+  REGULAR
+  VIP
+  PREMIUM
+}
+
+enum EventSeatStatus {
+  AVAILABLE
+  RESERVED
+  BOOKED
+  DISABLED
+}
+
+enum ReservationStatus {
+  PENDING
+  CONFIRMED
+  EXPIRED
+  CANCELLED
+}
+
+enum BookingStatus {
+  PENDING_PAYMENT
+  CONFIRMED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+enum RefundStatus {
+  PENDING
+  PROCESSED
+  FAILED
+}
+
+enum NotificationType {
+  BOOKING_CONFIRMED
+  BOOKING_CANCELLED
+  PAYMENT_FAILED
+  RESERVATION_EXPIRED
+  REFUND_PROCESSED
+  REFUND_FAILED
+  EVENT_CANCELLED
+}
+
+// ─── Models ────────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  role         UserRole @default(USER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  refreshTokens RefreshToken[]
+  reservations  Reservation[]
+  bookings      Booking[]
+  notifications Notification[]
+  createdEvents Event[]        @relation("EventCreator")
+
+  @@index([email])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+}
+
+model Venue {
+  id            String   @id @default(uuid())
+  name          String
+  address       String
+  city          String
+  totalCapacity Int
+  layoutConfig  Json     // Defines rows/columns/sections
+  createdAt     DateTime @default(now())
+
+  seats  Seat[]
+  events Event[]
+
+  @@index([city])
+}
+
+model Event {
+  id          String      @id @default(uuid())
+  title       String
+  description String?
+  venueId     String
+  startsAt    DateTime
+  endsAt      DateTime
+  status      EventStatus @default(DRAFT)
+  createdBy   String
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  venue        Venue         @relation(fields: [venueId], references: [id])
+  creator      User          @relation("EventCreator", fields: [createdBy], references: [id])
+  eventSeats   EventSeat[]
+  reservations Reservation[]
+  bookings     Booking[]
+
+  @@index([status, startsAt])
+  @@index([venueId])
+  @@index([createdBy])
+}
+
+model Seat {
+  id        String      @id @default(uuid())
+  venueId   String
+  row       String      // e.g. "A", "B", "C"
+  number    Int         // Seat number within the row
+  section   SeatSection @default(REGULAR)
+  isActive  Boolean     @default(true)
+
+  venue      Venue       @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  eventSeats EventSeat[]
+
+  @@unique([venueId, row, number])
+  @@index([venueId])
+}
+
+model EventSeat {
+  id      String          @id @default(uuid())
+  eventId String
+  seatId  String
+  price   Decimal         @db.Decimal(10, 2)
+  status  EventSeatStatus @default(AVAILABLE)
+  version Int             @default(0) // Optimistic locking version
+
+  event            Event             @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  seat             Seat              @relation(fields: [seatId], references: [id], onDelete: Cascade)
+  reservationItems ReservationItem[]
+  bookingItems     BookingItem[]
+
+  @@unique([eventId, seatId])
+  @@index([eventId, status])
+  @@index([seatId])
+}
+
+model Reservation {
+  id        String            @id @default(uuid())
+  userId    String
+  eventId   String
+  expiresAt DateTime
+  status    ReservationStatus @default(PENDING)
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  user    User              @relation(fields: [userId], references: [id])
+  event   Event             @relation(fields: [eventId], references: [id])
+  items   ReservationItem[]
+  booking Booking?
+
+  @@index([userId, status])
+  @@index([eventId])
+  @@index([status, expiresAt])
+}
+
+model ReservationItem {
+  id            String @id @default(uuid())
+  reservationId String
+  eventSeatId   String
+
+  reservation Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  eventSeat   EventSeat   @relation(fields: [eventSeatId], references: [id])
+
+  @@unique([reservationId, eventSeatId])
+  @@index([eventSeatId])
+}
+
+model Booking {
+  id              String        @id @default(uuid())
+  userId          String
+  reservationId   String        @unique
+  eventId         String
+  totalAmount     Decimal       @db.Decimal(10, 2)
+  status          BookingStatus @default(PENDING_PAYMENT)
+  idempotencyKey  String        @unique
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  user        User          @relation(fields: [userId], references: [id])
+  reservation Reservation   @relation(fields: [reservationId], references: [id])
+  event       Event         @relation(fields: [eventId], references: [id])
+  items       BookingItem[]
+  payments    Payment[]
+  refunds     Refund[]
+
+  @@index([userId])
+  @@index([eventId])
+  @@index([idempotencyKey])
+}
+
+model BookingItem {
+  id             String  @id @default(uuid())
+  bookingId      String
+  eventSeatId    String
+  priceAtBooking Decimal @db.Decimal(10, 2)
+
+  booking   Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  eventSeat EventSeat @relation(fields: [eventSeatId], references: [id])
+
+  @@index([bookingId])
+  @@index([eventSeatId])
+}
+
+model Payment {
+  id               String        @id @default(uuid())
+  bookingId        String
+  amount           Decimal       @db.Decimal(10, 2)
+  status           PaymentStatus @default(PENDING)
+  providerRef      String?       // Transaction ID from payment provider
+  providerResponse Json?         // Full response from provider
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  booking Booking  @relation(fields: [bookingId], references: [id])
+  refunds Refund[]
+
+  @@index([bookingId])
+  @@index([providerRef])
+}
+
+model Refund {
+  id          String       @id @default(uuid())
+  paymentId   String
+  bookingId   String
+  amount      Decimal      @db.Decimal(10, 2)
+  status      RefundStatus @default(PENDING)
+  processedAt DateTime?
+  createdAt   DateTime     @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id])
+  booking Booking @relation(fields: [bookingId], references: [id])
+
+  @@index([paymentId])
+  @@index([bookingId])
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  metadata  Json?
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
+}
