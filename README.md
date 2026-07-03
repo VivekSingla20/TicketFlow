@@ -1,6 +1,6 @@
 # TicketFlow — High-Concurrency Ticket Booking System
 
-TicketFlow is a production-ready, monorepo-structured ticket booking application designed to handle high-concurrency traffic safely. It is engineered to allow **20,000 concurrent users competing for 200 seats** without any double-bookings, utilizing a multi-layered concurrency architecture (Redis Redlock, PostgreSQL transactions, and Version optimistic locking).
+TicketFlow is a monorepo-structured ticket booking application designed for high-concurrency environments. It utilizes a multi-layered concurrency architecture (Redis Redlock, PostgreSQL transactions, and optimistic version locking) to prevent double-bookings under concurrent seat reservation requests.
 
 ---
 
